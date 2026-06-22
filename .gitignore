@@ -1,0 +1,28 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+
+# Wails build output
+/build/bin/
+/build/darwin/
+/build/windows/
+/build/linux/
+
+# Frontend
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.svelte-kit/
+
+# Local databases / scan data
+*.db
+*.db-shm
+*.db-wal
+/tmp/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.log
