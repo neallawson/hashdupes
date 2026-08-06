@@ -24,10 +24,11 @@ type Store struct {
 	db *sql.DB
 }
 
-// Open opens (creating if necessary) the SQLite database at path, applies
-// pragmas for safe concurrent local use, and runs all pending migrations.
-// Use ":memory:" for an ephemeral in-process database (tests).
-func Open(ctx context.Context, path string) (*Store, error) {
+// OpenDB opens (creating if necessary) the SQLite database at path and applies
+// pragmas for safe concurrent local use. It does NOT run migrations, so it is
+// suitable for migration tooling that needs explicit control. Use ":memory:"
+// for an ephemeral in-process database (tests).
+func OpenDB(ctx context.Context, path string) (*sql.DB, error) {
 	dsn := buildDSN(path)
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
@@ -39,6 +40,16 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("index: ping db: %w", err)
+	}
+	return db, nil
+}
+
+// Open opens the database at path and runs all pending migrations, returning a
+// ready-to-use Store.
+func Open(ctx context.Context, path string) (*Store, error) {
+	db, err := OpenDB(ctx, path)
+	if err != nil {
+		return nil, err
 	}
 	if err := Migrate(ctx, db); err != nil {
 		_ = db.Close()
@@ -219,10 +230,10 @@ func (s *Store) CandidateFileGroups(ctx context.Context, scanID int64) ([]model.
 	var cur *model.FileDupGroup
 	for rows.Next() {
 		var (
-			f        model.File
-			parent   sql.NullInt64
-			ctime    sql.NullInt64
-			mtimeN   int64
+			f      model.File
+			parent sql.NullInt64
+			ctime  sql.NullInt64
+			mtimeN int64
 		)
 		if err := rows.Scan(&f.ID, &f.ScanID, &parent, &f.Path, &f.Name, &f.Size, &mtimeN, &ctime, &f.Ext, &f.IsEmpty, &f.HeadHash); err != nil {
 			return nil, err

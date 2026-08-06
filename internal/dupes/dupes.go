@@ -73,6 +73,41 @@ func (s *Service) Report(ctx context.Context, scanID int64) (Report, error) {
 	return rep, nil
 }
 
+// CandidateReport builds an *unverified* report: file groups are raw
+// candidates (matching size + head hash) and are not byte-compared. This backs
+// the lazy verification model, where confirmation happens per-group on demand
+// via ConfirmPaths. Folder groups and subsumption flags are still computed.
+func (s *Service) CandidateReport(ctx context.Context, scanID int64) (Report, error) {
+	folderGroups, err := s.store.FolderDupGroups(ctx, scanID)
+	if err != nil {
+		return Report{}, err
+	}
+	candidates, err := s.store.CandidateFileGroups(ctx, scanID)
+	if err != nil {
+		return Report{}, err
+	}
+	dupFolderPaths := folderPaths(folderGroups)
+	fileGroups := make([]FileGroup, 0, len(candidates))
+	for _, cand := range candidates {
+		fileGroups = append(fileGroups, FileGroup{
+			FileDupGroup:    cand, // Verified stays false
+			WithinDupFolder: groupWithinDupFolder(cand, dupFolderPaths),
+		})
+	}
+	return Report{FolderGroups: folderGroups, FileGroups: fileGroups}, nil
+}
+
+// ConfirmPaths is the lazy, on-demand verification entry point used by the API.
+// Given the paths of a candidate group (all sharing size), it byte-compares
+// them and returns the confirmed duplicate subgroups.
+func ConfirmPaths(size int64, paths []string) ([]model.FileDupGroup, map[string]error) {
+	cand := model.FileDupGroup{Size: size}
+	for _, p := range paths {
+		cand.Files = append(cand.Files, model.File{Path: p, Size: size})
+	}
+	return ConfirmGroup(cand)
+}
+
 // ConfirmGroup splits a single candidate group into one or more confirmed
 // groups by byte-comparing members. Singletons (whose only true match dropped
 // out) are discarded. This is the lazy verification used both for display and
