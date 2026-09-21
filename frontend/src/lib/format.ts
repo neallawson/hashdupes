@@ -24,6 +24,32 @@ export function formatDate(rfc3339: string): string {
   });
 }
 
+/**
+ * formatDuration renders a millisecond span as m:ss (h:mm:ss past an hour),
+ * dropping to fractional seconds for short spans so that a fast scan does not
+ * read as having taken no time at all.
+ */
+export function formatDuration(ms: number): string {
+  if (ms < 10_000) return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const s = total % 60;
+  const m = Math.floor(total / 60) % 60;
+  const h = Math.floor(total / 3600);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+/** formatRate renders a per-second byte throughput. */
+export function formatRate(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "—";
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+/** formatCount renders a number with locale grouping. */
+export function formatCount(n: number): string {
+  return n.toLocaleString();
+}
+
 /** dirOf returns the parent directory portion of a path. */
 export function dirOf(path: string): string {
   const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));

@@ -1,63 +1,71 @@
 <script lang="ts">
-  import { ChevronRight, FileIcon, Loader2, ShieldCheck, ShieldQuestion, FolderTree } from "lucide-svelte";
+  import {
+    ChevronRight,
+    FileIcon,
+    Loader2,
+    ShieldCheck,
+    ShieldQuestion,
+    ShieldAlert,
+    ShieldX,
+    Split,
+    FolderTree,
+    CircleSlash,
+  } from "lucide-svelte";
   import Badge from "$lib/components/ui/Badge.svelte";
-  import { api } from "$lib/api";
+  import CopyPath from "$lib/components/ui/CopyPath.svelte";
   import { formatBytes, formatDate, dirOf, pluralize } from "$lib/format";
   import type { FileGroupDTO } from "$lib/types";
+  import type { Verification } from "$lib/verification.svelte";
 
-  let { group }: { group: FileGroupDTO } = $props();
+  let {
+    group,
+    verification,
+  }: { group: FileGroupDTO; verification: Verification } = $props();
 
   let open = $state(false);
-  let verifying = $state(false);
-  let verified = $state(false);
-  // After verification a candidate may split into several confirmed subgroups.
-  let confirmedGroups = $state<FileGroupDTO[]>([]);
-  let verifyError = $state<string | null>(null);
+
+  const result = $derived(verification.result(group.id));
+  const isZeroByte = $derived(group.size === 0);
+  // Confirmed subgroups once verified, otherwise the raw candidate.
+  const subgroups = $derived(
+    result.outcome === "confirmed" || result.outcome === "split"
+      ? result.groups
+      : [group],
+  );
+  const reclaimable = $derived(verification.reclaimableFor(group));
 
   async function toggle() {
     open = !open;
-    if (open && !verified && !verifying) {
-      await verify();
-    }
+    if (open) await verification.verify(group);
   }
-
-  async function verify() {
-    verifying = true;
-    verifyError = null;
-    try {
-      const res = await api.verifyGroup({
-        size: group.size,
-        paths: group.files.map((f) => f.path),
-      });
-      confirmedGroups = res.groups ?? [];
-      if (res.errors && Object.keys(res.errors).length > 0) {
-        verifyError = Object.values(res.errors)[0];
-      }
-      verified = true;
-    } catch (e) {
-      verifyError = e instanceof Error ? e.message : String(e);
-    } finally {
-      verifying = false;
-    }
-  }
-
-  // Subgroups to render: confirmed ones once verified, else the raw candidate.
-  const subgroups = $derived(verified ? confirmedGroups : [group]);
 </script>
 
 <div class="rounded-lg border bg-card">
   <button
     type="button"
     onclick={toggle}
+    aria-expanded={open}
     class="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-accent/40"
   >
     <ChevronRight
-      class="size-4 shrink-0 text-muted-foreground transition-transform {open ? 'rotate-90' : ''}"
+      class="size-4 shrink-0 text-muted-foreground transition-transform {open
+        ? 'rotate-90'
+        : ''}"
     />
     <FileIcon class="size-4 shrink-0 text-muted-foreground" />
     <span class="min-w-0 flex-1 truncate font-medium">
       {group.files[0]?.name ?? "—"}
     </span>
+
+    <span class="shrink-0 text-xs text-muted-foreground">
+      {pluralize(group.files.length, "copy", "copies")}
+    </span>
+
+    {#if isZeroByte}
+      <Badge variant="outline" class="gap-1 border-amber-500/40 text-amber-500">
+        <CircleSlash class="size-3" /> zero-byte
+      </Badge>
+    {/if}
 
     {#if group.withinDupFolder}
       <Badge variant="outline" class="gap-1">
@@ -65,13 +73,25 @@
       </Badge>
     {/if}
 
-    {#if verifying}
+    {#if result.outcome === "verifying"}
       <Badge variant="secondary" class="gap-1">
         <Loader2 class="size-3 animate-spin" /> verifying
       </Badge>
-    {:else if verified}
+    {:else if result.outcome === "confirmed"}
       <Badge variant="success" class="gap-1">
         <ShieldCheck class="size-3" /> confirmed
+      </Badge>
+    {:else if result.outcome === "split"}
+      <Badge variant="outline" class="gap-1 border-amber-500/40 text-amber-500">
+        <Split class="size-3" /> split
+      </Badge>
+    {:else if result.outcome === "rejected"}
+      <Badge variant="destructive" class="gap-1">
+        <ShieldX class="size-3" /> not duplicates
+      </Badge>
+    {:else if result.outcome === "failed"}
+      <Badge variant="destructive" class="gap-1">
+        <ShieldAlert class="size-3" /> verify failed
       </Badge>
     {:else}
       <Badge variant="secondary" class="gap-1">
@@ -83,37 +103,67 @@
       {formatBytes(group.size)}
     </span>
     <span class="w-28 text-right text-sm tabular-nums">
-      {formatBytes(group.reclaimable)} saved
+      {formatBytes(reclaimable)} saved
     </span>
   </button>
 
   {#if open}
     <div class="border-t px-4 py-3">
-      {#if verifyError}
-        <p class="mb-2 text-sm text-destructive">Verification issue: {verifyError}</p>
+      {#if result.error}
+        <p class="mb-2 text-sm text-destructive">
+          Verification issue: {result.error}
+        </p>
       {/if}
 
-      {#if verifying}
+      {#if result.outcome === "verifying"}
         <p class="text-sm text-muted-foreground">Comparing file contents…</p>
-      {:else if verified && confirmedGroups.length === 0}
-        <p class="text-sm text-muted-foreground">
-          No confirmed duplicates — these files share a size and header but differ in content.
+      {:else if result.outcome === "rejected"}
+        <p class="mb-3 text-sm text-muted-foreground">
+          Not duplicates — these files share a size and content header but differ
+          later in the file. This is the head-hash collision the byte-compare
+          exists to catch.
         </p>
-      {:else}
-        {#each subgroups as sg, i}
+      {:else if result.outcome === "split"}
+        <p class="mb-3 text-sm text-amber-500">
+          The candidate split into {pluralize(result.groups.length, "confirmed set")}
+          after comparing contents.
+        </p>
+      {/if}
+
+      {#if result.outcome !== "verifying"}
+        {#each subgroups as sg, i (sg.id + i)}
           {#if subgroups.length > 1}
-            <p class="mb-1 mt-3 text-xs font-semibold uppercase text-muted-foreground">
-              Confirmed set {i + 1} · {pluralize(sg.files.length, "copy", "copies")}
+            <p
+              class="mb-1 mt-3 text-xs font-semibold uppercase text-muted-foreground"
+            >
+              Confirmed set {i + 1} · {pluralize(
+                sg.files.length,
+                "copy",
+                "copies",
+              )}
             </p>
           {/if}
           <ul class="divide-y rounded-md border">
             {#each sg.files as file (file.path)}
-              <li class="flex items-center gap-3 px-3 py-2 text-sm">
+              <li class="flex items-center gap-2 px-3 py-2 text-sm">
                 <span class="min-w-0 flex-1">
-                  <span class="block truncate font-medium">{file.name}</span>
-                  <span class="block truncate text-xs text-muted-foreground">{dirOf(file.path)}</span>
+                  <span class="flex items-center gap-1.5">
+                    <span class="truncate font-medium">{file.name}</span>
+                    {#if file.isEmpty}
+                      <CircleSlash
+                        class="size-3 shrink-0 text-amber-500"
+                        aria-label="zero-byte file"
+                      />
+                    {/if}
+                  </span>
+                  <span class="block truncate text-xs text-muted-foreground">
+                    {dirOf(file.path)}
+                  </span>
                 </span>
-                <span class="shrink-0 text-xs text-muted-foreground">{formatDate(file.modTime)}</span>
+                <span class="shrink-0 text-xs tabular-nums text-muted-foreground">
+                  {formatDate(file.modTime)}
+                </span>
+                <CopyPath path={file.path} />
               </li>
             {/each}
           </ul>

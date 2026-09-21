@@ -78,6 +78,11 @@ migrate-down:
 migrate-status:
 	$(MIGRATE) status
 
+## fixture: build a synthetic test tree at /tmp/hashdupes-fixture
+.PHONY: fixture
+fixture:
+	./scripts/mkfixture.sh /tmp/hashdupes-fixture --force
+
 ## doctor: check Wails system dependencies
 .PHONY: doctor
 doctor:
