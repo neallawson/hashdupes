@@ -47,6 +47,8 @@ hashdupes/
 ├── wails.json              # Wails project config
 ├── Makefile                # Dev tasks (see §5)
 ├── PLAN.md                 # Full design doc — source of truth for intent
+├── scripts/
+│   └── mkfixture.sh        # Builds a synthetic test tree (see `make fixture`)
 ├── cmd/
 │   └── migrate/            # Standalone migration CLI (up/down/status)
 ├── internal/
@@ -70,11 +72,14 @@ hashdupes/
     │       ├── api.ts              # Typed wrappers over window.go / window.runtime
     │       ├── types.ts            # Mirrors of the Go v1 DTOs (keep in sync!)
     │       ├── utils.ts            # cn() (clsx + tailwind-merge)
-    │       ├── format.ts           # byte/date formatting helpers
+    │       ├── format.ts           # byte/date/duration/rate formatting helpers
+    │       ├── clipboard.ts        # copyText() with a non-secure-origin fallback
+    │       ├── verification.svelte.ts  # Shared byte-compare state (runes store)
     │       └── components/
-    │           ├── ui/             # shadcn-idiom primitives: Button, Badge, Progress, Switch
-    │           ├── Results.svelte  # Tabs + summary + group lists
-    │           ├── FileGroup.svelte    # Collapsible; lazy verify-on-expand
+    │           ├── ui/             # shadcn-idiom primitives: Button, Badge, Progress,
+    │           │                   # Switch, SwitchField, Input, Select, CopyPath
+    │           ├── Results.svelte  # Summary + verification bar + filter/sort + lists
+    │           ├── FileGroup.svelte    # Collapsible; verify-on-expand
     │           └── FolderGroup.svelte  # Collapsible folder group
     └── dist/               # Vite build output; embedded by main.go (gitignored)
 ```
@@ -99,6 +104,12 @@ hashdupes/
   `VerifyGroup` when the user expands a group. Going eager/hybrid later is an
   additive change (call `VerifyGroup` for all groups or in a background job) with
   no change to core logic.
+- **Verification state is shared, not per-component.** `lib/verification.svelte.ts`
+  holds one `Verification` instance per report, keyed by group id. This is what
+  lets summary totals report *confirmed* rather than candidate figures, and lets
+  "Verify all" drive every group at once (bounded concurrency). Each candidate
+  settles as `confirmed`, `split`, `rejected`, or `failed`; `reclaimableFor` and
+  `setCountFor` fall back to the candidate estimate until a group settles.
 - **Folder subsumption.** File groups whose members all live inside a duplicate
   folder are flagged `withinDupFolder` so the UI can hide them (avoids showing the
   same duplication twice).
@@ -133,6 +144,7 @@ hashdupes/
 | `make test-race` | Go tests with `-race` |
 | `make vet` / `make fmt` | `go vet` / `go fmt` |
 | `make check-frontend` | `svelte-check` type-check |
+| `make fixture` | Build a synthetic test tree at `/tmp/hashdupes-fixture` |
 | `make migrate-status` / `migrate-up` / `migrate-down` | Schema migrations |
 | `make doctor` | Check Wails system deps |
 | `make clean` | Remove `build/bin` and `frontend/dist` |
@@ -185,11 +197,38 @@ workflows.
 
 **Not yet done (intentionally):**
 - No write/trash/move/delete bound to the API (read-only validation phase).
-- UI refinement pass is ongoing.
 - Richer components (bits-ui-based shadcn Select/Dialog) deferred until the
-  write/action UI is built.
+  write/action UI is built. `Dialog` mainly earns its keep for destructive
+  confirmations, which is Phase 4.
+- **Read-only API gaps that still limit validation** (additive, safe to do in
+  this phase):
+  - Skipped entries are only a count; there is no per-entry reason, so
+    `PLAN.md` §8's "skipped report" cannot be surfaced.
+  - `scan.Progress` has no `FilesReused`, so the incremental hash cache (§4.3)
+    is unobservable from the UI.
+  - No binding lists or reloads persisted scans, so scan history and
+    scan-to-scan diffing cannot be exercised. Data is already in the DB;
+    see `PLAN.md` §12.7 (build independently of hashing strategy).
 
-See `PLAN.md` §11+ for the phased roadmap.
+**Open design — address before Phase 4:** `PLAN.md` §12 reopens two previously
+resolved decisions (head-hash every file; byte-compare as confirmation) and
+records the proposed replacement: **tiered hashing** (size → head hash → full
+hash on survivors), **size-gated hashing** (do not hash unique-size files),
+**tiered folder signatures** so the Merkle hash stays intrinsic, and **keep
+byte-compare only as the pre-action freshness gate**. Related: folder groups
+are currently never verified (`FolderGroupDTO` has no `Verified` field) —
+§12.8.1. Suggested order is §12.9. Do **not** implement this without an
+explicit request; it changes what `verified` means in the v1 DTOs.
+
+**Validating the pipeline:** `make fixture` builds a tree covering exact file
+dupes, content-identical folders with differing names, empty folders, zero-byte
+files, a deliberate head-hash collision (same size + same first 64 KiB, different
+tail), hidden entries, and an unreadable file. The collision pair **must** show as
+`rejected` after byte-compare — that case is the reason verification is mandatory
+under the current (pre-§12) scheme.
+
+See `PLAN.md` §11 for resolved decisions, §12 for the open hashing/history
+tradeoffs, and §10 for the phased roadmap.
 
 ---
 
@@ -200,8 +239,12 @@ See `PLAN.md` §11+ for the phased roadmap.
 - **App exits immediately / white flash:** native WebKit libs must be installed;
   the window background is set dark in `main.go` to avoid a flash.
 - **Native `<select>` text invisible on dark theme:** WebKit ignores inherited text
-  color on selects — set `text-foreground` explicitly and style `<option>`s (see the
-  algorithm select in `App.svelte`).
+  color on selects, so both the select and its `<option>`s must set it explicitly.
+  This is encapsulated in `ui/Select.svelte` — use that rather than a raw `<select>`.
+- **Labelled switches:** use `ui/SwitchField.svelte`. `ui/Switch.svelte` renders a
+  transparent real checkbox over the track so that an external `<label for>`
+  associates natively; passing its `label` prop *and* adjacent text duplicates the
+  accessible name.
 - **`frontend/dist` is gitignored but required by `//go:embed`.** A placeholder
   `index.html` keeps `go build` working; `wails build`/`vite build` produce the real output.
 - **`lucide-svelte` is deprecated** in favor of `@lucide/svelte`; a one-line dep swap
